@@ -43,14 +43,27 @@ jobs:
           echo "$BUILD_P12" | base64 -d > certificate.p12
           echo "$BUILD_PROVISION" | base64 -d > profile.mobileprovision
 
+          # --- Convert legacy/openssl-made p12 to a modern format ---
+          # The p12 may be encrypted with legacy algorithms (RC2/3DES) which
+          # macOS `security import` rejects. Re-export with a known modern password.
+          export P12PASS="$BUILD_P12_PASSWORD"
+          # Try legacy algorithms first (older p12); fall back to default if needed.
+          if ! openssl pkcs12 -legacy -in certificate.p12 -passin "env:P12PASS" -out certkey.pem -nodes 2>/dev/null; then
+            openssl pkcs12 -in certificate.p12 -passin "env:P12PASS" -out certkey.pem -nodes
+          fi
+          echo "=== openssl unpack done ==="
+          # Re-export with a fixed modern password 'newpass' using default (aes256) algorithm
+          openssl pkcs12 -export -in certkey.pem -out converted.p12 -passout pass:newpass -name "FreeTube"
+          echo "=== converted.p12 created ==="
+
           # Create & unlock a dedicated keychain
           security create-keychain -p temp build.keychain
           security list-keychains -d user -s "$HOME/Library/Keychains/build.keychain-db"
           security default-keychain -s build.keychain
           security unlock-keychain -p temp build.keychain
 
-          # Import certificate - FAIL LOUDLY if it fails
-          security import certificate.p12 -k build.keychain -P "$BUILD_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/codesign_allocate
+          # Import the CONVERTED certificate - FAIL LOUDLY if it fails
+          security import converted.p12 -k build.keychain -P newpass -T /usr/bin/codesign -T /usr/bin/codesign_allocate
           echo "=== Import exit: $? ==="
 
           # Unlock again (some runners re-lock) + allow codesign access
