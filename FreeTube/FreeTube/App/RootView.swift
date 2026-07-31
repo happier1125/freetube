@@ -86,7 +86,7 @@ struct RootView: View {
         // track the finger during the drag once playback became interactive. `.drag` alone is
         // what LNPopupUI ships for this exact use case; the popup bar's own tap-to-open still
         // works the same.
-        .popupInteractionStyle(UIViewController.PopupInteractionStyle.drag)
+        .popupInteractionStyle(UIViewController.PopupInteractionStyle.none)
         .popupCloseButtonStyle(LNPopupCloseButton.Style.none)
         .popupBarStyle(LNPopupBar.Style.prominent)
         // Explicitly enable the thin progress line at the bottom of the popup bar so playback
