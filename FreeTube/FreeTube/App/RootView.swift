@@ -88,7 +88,7 @@ struct RootView: View {
         // works the same.
         .popupInteractionStyle(UIViewController.PopupInteractionStyle.none)
         .popupCloseButtonStyle(LNPopupCloseButton.Style.none)
-        .popupBarStyle(LNPopupBar.Style.prominent)
+        .popupBarStyle(LNPopupBar.Style.compact)
         // Explicitly enable the thin progress line at the bottom of the popup bar so playback
         // and download progress are always visible without expanding the player.
         .popupBarProgressViewStyle(.bottom)
