@@ -33,47 +33,32 @@ jobs:
       - name: Patch LNPopupUI version for Xcode 16 compatibility
         run: |
           XCVER=$(xcodebuild -version | head -1 | grep -oE '[0-9]+' | head -1)
-          echo "Xcode major version: $XCVER"
           if [ "$XCVER" -lt 26 ]; then
-            echo "Xcode < 26: pinning LNPopupUI from 3.0.2 to 3.0.0"
+            echo "Pinning LNPopupUI 3.0.2 -> 3.0.0 for Xcode $XCVER"
             sed -i '' 's/minimumVersion = 3.0.2;/minimumVersion = 3.0.0;/g' FreeTube/FreeTube.xcodeproj/project.pbxproj
             sed -i '' 's/minimumVersion = 3.0.1;/minimumVersion = 3.0.0;/g' FreeTube/FreeTube.xcodeproj/project.pbxproj
-          else
-            echo "Xcode 26+: no version patch needed"
           fi
 
-      - name: Setup code signing
+      - name: Patch bundle ID
         run: |
-          # Decode p12 and mobileprovision from GitHub Secrets
+          # We sign manually with codesign later, so just keep original bundle ID here
+          echo "Bundle ID kept as default (will not sign with xcodebuild)"
+
+      - name: Setup signing materials
+        run: |
           echo "$BUILD_P12" | base64 -d > certificate.p12
           echo "$BUILD_PROVISION" | base64 -d > profile.mobileprovision
-
-          # Install provision profile
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
-
-          # Import certificate to keychain
           security create-keychain -p temp build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p temp build.keychain
-          security import certificate.p12 -k build.keychain -P "$BUILD_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/xcodebuild 2>&1 | tail -3 || true
-          security set-key-partition-list -S apple-tool:,apple: -s -k temp build.keychain 2>&1 | tail -2 || true
-
-          # Extract team ID, bundle ID, and provisioning profile UUID from the mobileprovision
+          security import certificate.p12 -k build.keychain -P "$BUILD_P12_PASSWORD" 2>&1 | tail -2 || true
+          security set-key-partition-list -S apple-tool:,apple: -s -k temp build.keychain 2>&1 | tail -1 || true
           PLAIN=$(security cms -D -i profile.mobileprovision)
           TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print :TeamIdentifier:0" /dev/stdin <<< "$PLAIN")
-          PROV_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$PLAIN")
-          # application-identifier = TEAM.bundle; strip team prefix
           BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" /dev/stdin <<< "$PLAIN" | sed "s/^$TEAM_ID\.//")
           echo "TEAM_ID=$TEAM_ID" >> $GITHUB_ENV
-          echo "PROV_UUID=$PROV_UUID" >> $GITHUB_ENV
           echo "BUNDLE_ID=$BUNDLE_ID" >> $GITHUB_ENV
-          echo "Bundle ID: $BUNDLE_ID | Team: $TEAM_ID | UUID: $PROV_UUID"
-
-          # Override FreeTube bundle ID with the one in the provision profile
-          sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = com\.leshko\.freetube;/PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID;/g" FreeTube/FreeTube.xcodeproj/project.pbxproj
-          echo "Patched bundle ID to: $BUNDLE_ID"
-          grep 'PRODUCT_BUNDLE_IDENTIFIER' FreeTube/FreeTube.xcodeproj/project.pbxproj
+          echo "TEAM/BUNDLE=$TEAM_ID/$BUNDLE_ID"
         env:
           BUILD_P12: ${{ secrets.BUILD_P12 }}
           BUILD_PROVISION: ${{ secrets.BUILD_PROVISION }}
@@ -86,7 +71,7 @@ jobs:
             -scheme FreeTube \
             -clonedSourcePackagesDirPath SPM
 
-      - name: Build and Archive
+      - name: Build and Archive (unsigned)
         run: |
           xcodebuild archive \
             -project FreeTube/FreeTube.xcodeproj \
@@ -94,45 +79,44 @@ jobs:
             -configuration Release \
             -archivePath FreeTube.xcarchive \
             -destination 'generic/platform=iOS' \
-            CODE_SIGN_IDENTITY="iPhone Distribution" \
-            DEVELOPMENT_TEAM="$TEAM_ID" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROV_UUID" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
             -clonedSourcePackagesDirPath SPM \
             -skipMacroValidation \
             -skipPackagePluginValidation
 
-      - name: Export signed IPA (ad-hoc)
+      - name: Sign app with certificate + provisioning
         run: |
-          # Ad Hoc method since this is a single-device profile (not enterprise In-House)
-          cat > exportOptions.plist << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>ad-hoc</string>
-              <key>teamID</key>
-              <string>$TEAM_ID</string>
-              <key>provisioningProfiles</key>
-              <dict>
-                  <key>$BUNDLE_ID</key>
-                  <string>$PROV_UUID</string>
-              </dict>
-              <key>signingCertificate</key>
-              <string>iPhone Distribution</string>
-              <key>stripSwiftSymbols</key>
-              <true/>
-          </dict>
-          </plist>
-          EOF
+          APP=FreeTube.xcarchive/Products/Applications/FreeTube.app
+          
+          # Override bundle ID in Info.plist to match provision
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" $APP/Info.plist
+          
+          # Extract entitlements from the provision profile
+          security cms -D -i profile.mobileprovision > profile.plist
+          /usr/libexec/PlistBuddy -c "Print :Entitlements" profile.plist > entitlements.plist
+          
+          echo "=== Signing embedded frameworks ==="
+          # Sign all dynamic frameworks inside the app (order: deepest first)
+          find $APP -name "*.framework" -d 1 -print | while read FRAMEWORK; do
+            echo "Signing $FRAMEWORK"
+            /usr/bin/codesign -f -s "iPhone Distribution" --entitlements entitlements.plist "$FRAMEWORK"
+          done
+          
+          echo "=== Signing app ==="
+          /usr/bin/codesign -f -s "iPhone Distribution" --entitlements entitlements.plist --timestamp=none $APP
+          
+          # Verify
+          /usr/bin/codesign -v $APP && echo "Codesign verification OK"
+          echo "Bundle ID after sign: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' $APP/Info.plist)"
 
-          xcodebuild -exportArchive \
-            -archivePath FreeTube.xcarchive \
-            -exportPath output \
-            -exportOptionsPlist exportOptions.plist
-
-          ls -la output/
-          mv output/*.ipa FreeTube-signed.ipa
+      - name: Build IPA
+        run: |
+          mkdir -p Payload
+          cp -R FreeTube.xcarchive/Products/Applications/FreeTube.app Payload/
+          zip -r FreeTube-signed.ipa Payload
+          rm -rf Payload
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
