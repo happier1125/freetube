@@ -244,8 +244,26 @@ final class PlayerStateManager {
 
     func play() {
         log.info("play()")
-        player.play()
-        isPlaying = true
+           guard let item = player.currentItem else {
+
+        log.error("play() called with no current AVPlayerItem")
+
+        return
+
+    }
+
+    guard item.status == .readyToPlay else {
+
+        log.error(
+
+            "play() called before ready: status=\(item.status.rawValue, privacy: .public)"
+
+        )
+        return
+    }
+
+    player.play()
+    isPlaying = true
     }
 
     func pause() {
@@ -409,11 +427,15 @@ final class PlayerStateManager {
                 return
             }
         }
-        let item = AVPlayerItem(url: playbackURL)
-        loadItem(item)
-        loadState = .readyToPlay
-        updateNowPlaying()
-        if autoplay { play() }
+let item = AVPlayerItem(url: playbackURL)
+loadItem(item)
+updateNowPlaying()
+
+if autoplay {
+    waitUntilReadyAndPlay(item)
+} else {
+    loadState = .readyToPlay
+}
         stopProgressObservation()
         log.info("resolveAndPlay: finished happy-path for \(video.id, privacy: .public)")
         // Fire-and-forget queue fill — uses YouTube's `/next` (WEB) endpoint, independent of the
