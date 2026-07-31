@@ -16,8 +16,27 @@ jobs:
 
       - name: Select Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
+          # Detect available Xcode versions
+          find /Applications -maxdepth 1 -name 'Xcode*' -type d 2>/dev/null | sort
+          # Prefer Xcode 26 if available, else use latest 16
+          XC=$(find /Applications -maxdepth 1 -name 'Xcode_26*' -type d 2>/dev/null | head -1)
+          if [ -n "$XC" ]; then
+            sudo xcode-select -s "$XC"
+          else
+            sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+          fi
           xcodebuild -version
+
+      - name: Patch LNPopupUI version for Xcode 16 compatibility
+        run: |
+          # LNPopupUI >= 3.0.1 requires Xcode 26+ (Swift Tools 6.2).
+          # Pin to 3.0.0 which works with Xcode 16.
+          XCVER=$(xcodebuild -version | head -1 | grep -oE '[0-9]+' | head -1)
+          if [ "$XCVER" -lt 26 ]; then
+            echo "Patching LNPopupUI version from 3.0.2 to 3.0.0 for Xcode $XCVER"
+            sed -i '' 's/minimumVersion = 3.0.2;/minimumVersion = 3.0.0;/g' FreeTube/FreeTube.xcodeproj/project.pbxproj
+            sed -i '' 's/minimumVersion = 3.0.1;/minimumVersion = 3.0.0;/g' FreeTube/FreeTube.xcodeproj/project.pbxproj
+          fi
 
       - name: Resolve Swift Package Dependencies
         run: |
