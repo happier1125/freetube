@@ -56,22 +56,24 @@ jobs:
           security create-keychain -p temp build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p temp build.keychain
-          security import certificate.p12 -k build.keychain -P "$BUILD_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/xcodebuild
-          security set-key-partition-list -S apple-tool:,apple: -s -k temp build.keychain
+          security import certificate.p12 -k build.keychain -P "$BUILD_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/xcodebuild 2>&1 | tail -3 || true
+          security set-key-partition-list -S apple-tool:,apple: -s -k temp build.keychain 2>&1 | tail -2 || true
 
-          # Extract team ID and provisioning profile UUID
-          TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print :TeamIdentifier:0" /dev/stdin <<< "$(security cms -D -i profile.mobileprovision)")
-          PROV_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$(security cms -D -i profile.mobileprovision)")
+          # Extract team ID, bundle ID, and provisioning profile UUID from the mobileprovision
+          PLAIN=$(security cms -D -i profile.mobileprovision)
+          TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print :TeamIdentifier:0" /dev/stdin <<< "$PLAIN")
+          PROV_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< "$PLAIN")
+          # application-identifier = TEAM.bundle; strip team prefix
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" /dev/stdin <<< "$PLAIN" | sed "s/^$TEAM_ID\.//")
           echo "TEAM_ID=$TEAM_ID" >> $GITHUB_ENV
           echo "PROV_UUID=$PROV_UUID" >> $GITHUB_ENV
-
-          # Extract bundle ID from provision and patch project
-          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" /dev/stdin <<< "$(security cms -D -i profile.mobileprovision)" | sed "s/$TEAM_ID\.//")
           echo "BUNDLE_ID=$BUNDLE_ID" >> $GITHUB_ENV
-          echo "Bundle ID from provision: $BUNDLE_ID, Team: $TEAM_ID"
+          echo "Bundle ID: $BUNDLE_ID | Team: $TEAM_ID | UUID: $PROV_UUID"
 
-          # Update project to match provision's bundle ID
-          /usr/libexec/PlistBuddy -c "Set :objects:AC591D202FB9BEE5009EE538:buildSettings:PRODUCT_BUNDLE_IDENTIFIER $BUNDLE_ID" FreeTube/FreeTube.xcodeproj/project.pbxproj 2>/dev/null || true
+          # Override FreeTube bundle ID with the one in the provision profile
+          sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = com\.leshko\.freetube;/PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID;/g" FreeTube/FreeTube.xcodeproj/project.pbxproj
+          echo "Patched bundle ID to: $BUNDLE_ID"
+          grep 'PRODUCT_BUNDLE_IDENTIFIER' FreeTube/FreeTube.xcodeproj/project.pbxproj
         env:
           BUILD_P12: ${{ secrets.BUILD_P12 }}
           BUILD_PROVISION: ${{ secrets.BUILD_PROVISION }}
@@ -99,16 +101,16 @@ jobs:
             -skipMacroValidation \
             -skipPackagePluginValidation
 
-      - name: Export signed IPA
+      - name: Export signed IPA (ad-hoc)
         run: |
-          # Create export options plist
+          # Ad Hoc method since this is a single-device profile (not enterprise In-House)
           cat > exportOptions.plist << EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
               <key>method</key>
-              <string>enterprise</string>
+              <string>ad-hoc</string>
               <key>teamID</key>
               <string>$TEAM_ID</string>
               <key>provisioningProfiles</key>
@@ -118,6 +120,8 @@ jobs:
               </dict>
               <key>signingCertificate</key>
               <string>iPhone Distribution</string>
+              <key>stripSwiftSymbols</key>
+              <true/>
           </dict>
           </plist>
           EOF
@@ -127,7 +131,8 @@ jobs:
             -exportPath output \
             -exportOptionsPlist exportOptions.plist
 
-          mv output/FreeTube.ipa FreeTube-signed.ipa
+          ls -la output/
+          mv output/*.ipa FreeTube-signed.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
