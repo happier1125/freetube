@@ -1,0 +1,55 @@
+name: Build FreeTube IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build IPA
+    runs-on: macos-15
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+
+      - name: Resolve Swift Package Dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project FreeTube/FreeTube.xcodeproj \
+            -scheme FreeTube \
+            -clonedSourcePackagesDirPath SPM
+
+      - name: Build and Archive
+        run: |
+          xcodebuild archive \
+            -project FreeTube/FreeTube.xcodeproj \
+            -scheme FreeTube \
+            -configuration Release \
+            -archivePath FreeTube.xcarchive \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            -clonedSourcePackagesDirPath SPM \
+            -skipMacroValidation \
+            -skipPackagePluginValidation
+
+      - name: Create IPA
+        run: |
+          mkdir -p Payload
+          cp -R FreeTube.xcarchive/Products/Applications/FreeTube.app Payload/
+          zip -r FreeTube.ipa Payload
+          rm -rf Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeTube.ipa
+          path: FreeTube.ipa
+          retention-days: 7
