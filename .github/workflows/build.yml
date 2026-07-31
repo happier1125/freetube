@@ -126,17 +126,23 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" $APP/Info.plist
 
           # Extract entitlements from provision profile
+          # security cms -D outputs a (binary) plist; convert to XML first,
+          # then have PlistBuddy emit an XML plist (codesign needs a valid
+          # plist, not the old-style {a=b;} ASCII output).
           security cms -D -i profile.mobileprovision > profile.plist
-          /usr/libexec/PlistBuddy -c "Print :Entitlements" profile.plist > entitlements.plist
+          plutil -convert xml1 profile.plist -o profile.xml
+          /usr/libexec/PlistBuddy -x -c "Print :Entitlements" profile.xml > entitlements.plist
+          echo "=== entitlements.plist ==="
+          cat entitlements.plist
 
           echo "=== Signing with identity: '$IDENTITY' ==="
-          echo "=== Signing embedded frameworks ==="
+          echo "=== Signing embedded frameworks (no entitlements) ==="
           find $APP -name "*.framework" -d 1 -print | while read FRAMEWORK; do
             echo "Signing $FRAMEWORK"
-            /usr/bin/codesign -f -s "$IDENTITY" --entitlements entitlements.plist "$FRAMEWORK"
+            /usr/bin/codesign -f -s "$IDENTITY" "$FRAMEWORK"
           done
 
-          echo "=== Signing app ==="
+          echo "=== Signing app (with entitlements) ==="
           /usr/bin/codesign -f -s "$IDENTITY" --entitlements entitlements.plist --timestamp=none $APP
 
           echo "=== Verifying ==="
