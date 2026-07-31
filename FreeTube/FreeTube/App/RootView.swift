@@ -68,14 +68,18 @@ struct RootView: View {
             isBarPresented: $player.miniPlayerVisible,
             isPopupOpen: $player.fullScreenPresented
         ) {
-            // The popup's content closure is called once and its result is hosted; SwiftUI does NOT
-            // re-evaluate the closure on every parent body re-render. So any modifier that takes a
-            // captured value (like `.popupProgress(value)`) freezes at the closure-creation time.
-            // To get live progress updates we wrap the modifiers in `PopupContentWrapper`, which is
-            // itself a `View` observing the player — when `player.elapsed` changes, the wrapper's
-            // body re-renders and `.popupProgress(...)` re-applies with the new value.
-            PopupContentWrapper(thumbnail: thumbnail)
+         if player.miniPlayerVisible {
+
+        PopupContentWrapper(thumbnail: thumbnail)
+
+    } else {
+
+        EmptyView()
+    }
         }
+    .transaction { transaction in
+    transaction.animation = nil
+}
         // `.drag` enables LNPopupUI's pull-down-from-content gesture for collapsing the
         // expanded player. Previously we had `.snap` here PLUS a hand-rolled `DragGesture` in
         // `FullScreenPlayer.body` — the two raced each other and the visible offset wouldn't
