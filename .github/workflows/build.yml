@@ -136,19 +136,36 @@ jobs:
           cat entitlements.plist
 
           echo "=== Signing with identity: '$IDENTITY' ==="
-          echo "=== Signing embedded frameworks (no entitlements) ==="
-          find $APP -name "*.framework" -d 1 -print | while read FRAMEWORK; do
-            echo "Signing $FRAMEWORK"
-            /usr/bin/codesign -f -s "$IDENTITY" "$FRAMEWORK"
-          done
+          # Correct recursive bottom-up re-sign of ALL nested code.
+          # SPM binary frameworks (Python.framework, FFmpeg.framework, ...) carry their own
+          # identifiers/entitlements from their build. If we re-sign them without
+          # --preserve-metadata, their sealed identifiers/entitlements change and the process
+          # is killed at load time (crash when tapping a video -> Python/yt-dlp loads).
+          # Sign deepest-first so a framework nested inside another is sealed before its parent.
+          DEEP_SIGN() {
+            find "$1" -name "*.framework" -type d | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2- | while read FW; do
+              echo "  sign framework: ${FW#$APP/}"
+              /usr/bin/codesign --force --sign "$IDENTITY" --preserve-metadata=identifier,entitlements,flags,runtime "$FW"
+            done
+            # any app extensions (PlugIns/*.appex) — these also need re-sealing
+            find "$1" -name "*.appex" -type d | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2- | while read AX; do
+              echo "  sign appex: ${AX#$APP/}"
+              /usr/bin/codesign --force --sign "$IDENTITY" --preserve-metadata=identifier,entitlements,flags,runtime "$AX"
+            done
+          }
 
-          echo "=== Signing app (with entitlements) ==="
-          /usr/bin/codesign -f -s "$IDENTITY" --entitlements entitlements.plist --timestamp=none $APP
+          # 1. Frameworks + extensions embedded in the app
+          DEEP_SIGN "$APP"
 
-          echo "=== Verifying ==="
-          /usr/bin/codesign -v $APP && echo "Codesign verification OK"
-          echo "Bundle ID after sign: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' $APP/Info.plist)"
-          codesign -d --entitlements :- $APP 2>/dev/null | grep -E 'application-identifier|get-task-allow' || echo "(entitlements check skipped)"
+          # 2. Main app bundle (with exact entitlements from provision profile)
+          /usr/bin/codesign --force --sign "$IDENTITY" --timestamp=none \
+            --entitlements entitlements.plist "$APP"
+
+          echo "=== Verifying (deep, strict) ==="
+          /usr/bin/codesign --verify --deep --strict $APP
+          echo "Codesign deep verification OK"
+          echo "=== Entitlements actually applied ==="
+          /usr/bin/codesign -d --entitlements - $APP 2>/dev/null | grep -E 'application-identifier|get-task-allow|keychain-access|push' || echo "(no matching entitlement keys)"
 
       - name: Build IPA
         run: |
